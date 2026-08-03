@@ -1,6 +1,7 @@
-# DECIDON NEL
+# DECIDON intra-session named entity resolution
 
-Intra-session Named Entity Resolution (NEL) for Label Studio exports of parliamentary debates. Resolves ambiguous titles and functions (`PER`/`SPK`) to named individuals.
+Intra-session named entity resolution for NER-annotated parliamentary debates.
+Resolves ambiguous titles and functions (`PER`/`SPK`) to named individuals within a parliamend or senate session.
 
 See [STRATEGY.md](STRATEGY.md) for more details on the resolution algorithm.
 
