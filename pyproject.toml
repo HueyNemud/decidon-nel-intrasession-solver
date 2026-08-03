@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "decidon-nel"
+version = "0.1.0"
+description = "Outil de désambiguïsation intra-documentaire pour les CR in extenso des débats parlementaires."
+authors = [{ name = "DECIDON Team" }]
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "loguru>=0.7.3",
+    "pandas>=3.0.5",
+    "pydantic>=2.13.4",
+    "rich>=13.7.0",
+    "sentence-transformers>=5.6.1",
+    "typer>=0.12.0",
+]
+
+
+[project.scripts]
+decidon-nel = "decidon_nel.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/decidon_nel"]
