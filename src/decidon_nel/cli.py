@@ -183,14 +183,6 @@ def resolve(
     """🔍 Execute multi-pass FCT resolution on Label Studio tasks."""
     logging.basicConfig(level=logging.DEBUG if verbose else logging.WARNING)
 
-    console.print(
-        Panel.fit(
-            "[bold cyan]DECIDON - Intra-Session NER[/bold cyan]\n"
-            "[dim]Named Entity Resolution for parlimentary debates[/dim]",
-            border_style="cyan",
-        )
-    )
-
     out_json = output_json or input_file.with_name(f"{input_file.stem}_resolved.json")
     out_csv = output_csv or input_file.with_name(f"{input_file.stem}_summary.csv")
     task_ids = parse_tasks(tasks)
@@ -232,10 +224,8 @@ def resolve(
     resolvable = [e for e in session_entities if should_resolve(e)]
 
     console.print(
-        Panel.fit(
-            f"[bold]Resolving [cyan]{len(resolvable)}[/cyan] ambiguous mentions[/bold]",
-            border_style="dim",
-        )
+            f"[bold]Resolving [cyan]{len(resolvable)}[/cyan] ambiguous mentions...[/bold]",
+        
     )
 
     for main_ent in session_entities:
