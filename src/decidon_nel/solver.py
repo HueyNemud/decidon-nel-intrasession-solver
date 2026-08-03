@@ -103,15 +103,22 @@ class Candidate:
 
 @dataclass(slots=True)
 class FCTRelation:
-    """Internal representation of a person(PER/SPK)-function(FCT) relationship for lexical resolution."""
+    """Représentation interne d'une relation personne-fonction."""
 
     person: Entity
     fct: Entity
     tokens: set[str]
     name_tokens: set[str]
     fct_position: int
-    last_seen_position: int
     is_external: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class FocusEntry:
+    """Entrée dans la pile de focus représentant l'activation d'un rôle à une position précise."""
+
+    fct_relation: FCTRelation
+    position: int
 
 
 HONORIFICS = frozenset(
@@ -211,19 +218,14 @@ def jaccard_similarity(set1: set[str], set2: set[str]) -> float:
 
 
 def coverage_score(mention_set: set[str], fctrelations_set: set[str]) -> float:
-    """Computes the coverage score (asymmetrical inclusion) of the mention tokens in the FCT relations tokens :
-
-    coverage = |mention_set ∩ fctrelations_set| / |mention_set|
-
-    Returns 0.0 if mention_set is empty.
-    """
+    """Calcul du taux de couverture (inclusion asymétrique) des tokens de la mention dans la FCT."""
     return (
         len(mention_set & fctrelations_set) / len(mention_set) if mention_set else 0.0
     )
 
 
 class LSAnnotation(BaseModel):
-    """Pydantic model for a Label Studio annotation, including the task text and the results of the last annotation."""
+    """Modèle Pydantic pour une annotation Label Studio."""
 
     id: int
     id_task: int
@@ -232,7 +234,6 @@ class LSAnnotation(BaseModel):
 
     @classmethod
     def from_dict(cls, task_dict: dict) -> "LSAnnotation":
-        """Extrait le texte de la tâche et les résultats de la dernière annotation."""
         annotations = task_dict.get("annotations") or []
         last_ann = annotations[-1] if annotations else {}
         task_data = task_dict.get("data", {})
@@ -250,7 +251,6 @@ class LSAnnotation(BaseModel):
         )
 
     def extract_main_entities(self, offset: int = 0) -> list[EntityWithFcts]:
-        """Parse les entités/relations de la tâche en appliquant l'offset continu de séance."""
         entities: dict[str, Entity] = {}
         relations: list[tuple[str, str, str]] = []
 
@@ -295,7 +295,6 @@ class LSAnnotation(BaseModel):
 
 
 def load_ls_data(file_path: str | Path) -> list[dict]:
-    """Charge le fichier JSON Label Studio brut."""
     with open(Path(file_path), "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -304,7 +303,6 @@ def extract_session(
     data_or_path: str | Path | list[dict] | pd.DataFrame,
     task_ids: list[int] | None = None,
 ) -> tuple[list[EntityWithFcts], str]:
-    """Extrait et reconstitue la séance avec un index global continu et trié chronologiquement."""
     if isinstance(data_or_path, (str, Path)):
         raw_tasks = load_ls_data(data_or_path)
     elif isinstance(data_or_path, pd.DataFrame):
@@ -332,40 +330,63 @@ def extract_session(
 
 
 class LexicalFCTResolver:
-    """Résolveur FCT multi-scopes (Séance, Section, Paragraphe) hautement optimisé."""
+    """Résolveur FCT basé sur une Pile de Focus (Focus Stack) pour éviter la propagation artificielle de récence."""
 
     def __init__(
         self,
-        jaccard_threshold: float = 0.70,  # Jaccard threshold for strong lexical match in pass 1
-        coverage_threshold: float = 0.85,  # Inclusion coverage threshold for pass 2
+        jaccard_threshold: float = 0.70,
+        coverage_threshold: float = 0.85,
         scope_routing: dict[str, Scope] | None = None,
+        debug_focus_stack: bool = False,
     ):
         self.jaccard_threshold = jaccard_threshold
         self.coverage_threshold = coverage_threshold
+        self.debug_focus_stack = debug_focus_stack
         self.fct_relations: list[FCTRelation] = []
         self._fct_relations_keys: set[tuple[str, str]] = set()
+        
+        # Pile d'activation des fonctions dans l'ordre chronologique du discours
+        self.focus_stack: list[FocusEntry] = []
+        
         self.titl_positions: list[int] = []
         self.scope_routing: dict[str, Scope] = {}
 
         if scope_routing:
             self.scope_routing.update(scope_routing)
 
+    def get_resolvable_entities(
+        self, entities: list[EntityWithFcts]
+    ) -> list[EntityWithFcts]:
+        """Filtre et retourne la liste des entités nécessitant une désambiguïsation (PER/SPK sans nom propre)."""
+        return [ent for ent in entities if should_resolve(ent)]
+
     def add_scope_rule(self, keyword: str, scope: Scope) -> None:
-        """Adds a keyword-based routing rule for determining the scope of resolution."""
         if norm_key := normalize_text(keyword):
             self.scope_routing[norm_key] = scope
 
+    def push_focus(self, fct_relation: FCTRelation, position: int) -> None:
+        """Empile une activation de rôle spécifique à une position donnée."""
+        entry = FocusEntry(fct_relation=fct_relation, position=position)
+        self.focus_stack.append(entry)
+        
+        if self.debug_focus_stack:
+            logger.debug(
+                "Focus Stack [+] : '{}' ({}) à pos {}",
+                fct_relation.fct.text,
+                fct_relation.person.text,
+                position,
+            )
+
     def add_fctrelation(
         self, person: Entity, fct: Entity, position: int, is_external: bool = False
-    ) -> None:
-        """Registers a FCT relation"""
+    ) -> FCTRelation | None:
         key = (person.text, fct.text)
         if key in self._fct_relations_keys:
-            return
+            return None
 
         tokens = get_tokens(fct.text)
         if not tokens:
-            return
+            return None
 
         name_tokens = {w for w in normalize_text(person.text).split() if len(w) > 2}
         fctrelation = FCTRelation(
@@ -374,42 +395,91 @@ class LexicalFCTResolver:
             tokens=tokens,
             name_tokens=name_tokens,
             fct_position=position,
-            last_seen_position=position,
             is_external=is_external,
         )
         self.fct_relations.append(fctrelation)
         self._fct_relations_keys.add(key)
-        logger.debug("FCT relation added : {} -> '{}'", person.text, fct.text)
+        
+        if not is_external and position >= 0:
+            self.push_focus(fctrelation, position)
+
+        source_label = "KG Externe" if is_external else f"Interne (pos={position})"
+        logger.debug(
+            "Relation FCT enregistrée [{}] : {} [{}] ──> '{}' [{}]",
+            source_label,
+            person.text,
+            person.type,
+            fct.text,
+            fct.type,
+        )
+        return fctrelation
 
     def inject_external_fctrelations(
-        self, external_pairs: list[tuple[str, str]] | list[dict[str, str]]
+        self, external_data: dict[str, str] | list[tuple[str, str]] | list[dict[str, str]]
     ) -> None:
-        """Injecte des paires (person_name, fct_text) issues d'une base de connaissances externe."""
-        for item in external_pairs:
+        """Injecte des relations FCT externes depuis un dictionnaire {PER: FCT}, une liste de tuples ou de dicts."""
+        count_before = len(self.fct_relations)
+
+        items_to_process = (
+            external_data.items()
+            if isinstance(external_data, dict)
+            else external_data
+        )
+
+        for item in items_to_process:
             match item:
                 case (str(name), str(fct)) if name and fct:
-                    self.add_fctrelation(name, fct, position=-1, is_external=True)
-                case {"person_name": name, "fct_text": fct} | {
-                    "name": name,
-                    "fct": fct,
-                } if (
-                    name and fct
-                ):
-                    self.add_fctrelation(
-                        str(name), str(fct), position=-1, is_external=True
+                    dummy_person = Entity(
+                        id=f"ext_{len(self.fct_relations)}",
+                        start=-1,
+                        end=-1,
+                        text=name,
+                        type="PER",
+                        task_id=-1,
+                        annotation_id=-1,
                     )
+                    dummy_fct = Entity(
+                        id=f"ext_fct_{len(self.fct_relations)}",
+                        start=-1,
+                        end=-1,
+                        text=fct,
+                        type="FCT",
+                        task_id=-1,
+                        annotation_id=-1,
+                    )
+                    self.add_fctrelation(dummy_person, dummy_fct, position=-1, is_external=True)
+                case {"person_name": name, "fct_text": fct} | {"name": name, "fct": fct} if name and fct:
+                    dummy_person = Entity(
+                        id=f"ext_{len(self.fct_relations)}",
+                        start=-1,
+                        end=-1,
+                        text=str(name),
+                        type="PER",
+                        task_id=-1,
+                        annotation_id=-1,
+                    )
+                    dummy_fct = Entity(
+                        id=f"ext_fct_{len(self.fct_relations)}",
+                        start=-1,
+                        end=-1,
+                        text=str(fct),
+                        type="FCT",
+                        task_id=-1,
+                        annotation_id=-1,
+                    )
+                    self.add_fctrelation(dummy_person, dummy_fct, position=-1, is_external=True)
                 case _:
                     continue
-        logger.info("{} external FCT relations injected.", len(external_pairs))
+
+        added_count = len(self.fct_relations) - count_before
+        logger.info("{} relations FCT externes (KG) injectées au socle.", added_count)
 
     def _get_section_index(self, pos: int) -> int:
-        """Calcule l'index de section (délimité par les entités TITL) en O(log N) via bisect."""
         if pos < 0:
             return -1
         return bisect.bisect_right(self.titl_positions, pos)
 
     def _get_scope_for_mention(self, text: str) -> Scope:
-        """Détermine le scope de résolution d'une mention selon le routage des mots-clés."""
         tokens = get_tokens(text)
         return next(
             (self.scope_routing[tok] for tok in tokens if tok in self.scope_routing),
@@ -417,60 +487,38 @@ class LexicalFCTResolver:
         )
 
     def _is_fctrelation_in_scope(
-        self, fctrelation: FCTRelation, curr_pos: int, target_scope: Scope
+        self, fctrelation: FCTRelation, curr_pos: int, target_scope: Scope, active_pos: int
     ) -> bool:
-        """Checks if a FCTRelation is within the desired scope relative to the current mention position."""
         if fctrelation.is_external or target_scope == Scope.SESSION:
             return True
 
         match target_scope:
             case Scope.SECTION:
-                return self._get_section_index(
-                    fctrelation.fct_position
-                ) == self._get_section_index(curr_pos)
+                return self._get_section_index(active_pos) == self._get_section_index(curr_pos)
             case Scope.PARAGRAPH:
-                return abs(curr_pos - fctrelation.last_seen_position) < 800
+                return abs(curr_pos - active_pos) < 800
             case _:
                 return True
 
-    def _update_position(self, person_name: str, new_position: int) -> None:
-        """Met à jour l'offset de récence d'une personne."""
-        for p in self.fct_relations:
-            if p.person.text == person_name:
-                p.last_seen_position = new_position
-
     def observe_mention(self, main_ent: EntityWithFcts) -> None:
-        """Observe a mention and updates the last seen position of any matching FCT relations based on lexical similarity."""
+        """Observe le fil du texte et empile uniquement la fonction spécifique qui est activée."""
         ent = main_ent.entity
         if ent.type.upper() == "TITL":
             if ent.start not in self.titl_positions:
                 bisect.insort(self.titl_positions, ent.start)
             return
 
-        if not ent.text:
+        if not ent.text or is_proper_name(ent.text):
             return
 
         pos = ent.start
-        if is_proper_name(ent.text):
-            if mention_tokens := {
-                w for w in normalize_text(ent.text).split() if len(w) > 2
-            }:
-                for p in self.fct_relations:
-                    if mention_tokens & p.name_tokens:
-                        self._update_position(p.person.text, pos)
-                        return
-            return
-
         if mention_tokens := get_tokens(ent.text):
             for p in self.fct_relations:
-                if (
-                    jaccard_similarity(mention_tokens, p.tokens)
-                    >= self.jaccard_threshold
-                ):
-                    self._update_position(p.person.text, pos)
+                if not p.is_external and jaccard_similarity(mention_tokens, p.tokens) >= self.jaccard_threshold:
+                    self.push_focus(p, pos)
 
     def update_state(self, main_ent: EntityWithFcts) -> None:
-        """Indexation initiale des TITL et des FCT rattachées aux personnes nommées."""
+        """Indexation initiale des TITL et des relations FCT explicites."""
         ent = main_ent.entity
         if ent.type.upper() == "TITL":
             if ent.start not in self.titl_positions:
@@ -482,21 +530,23 @@ class LexicalFCTResolver:
 
         for fct_link in main_ent.fcts:
             if fct_link.relation_type == "function_of":
-                self.add_fctrelation(
+                rel = self.add_fctrelation(
                     person=ent,
                     fct=fct_link.entity,
                     position=ent.start,
                     is_external=False,
                 )
-
-    def get_resolvable_entities(
-        self, session_entities: list[EntityWithFcts]
-    ) -> list[EntityWithFcts]:
-        """Filtre les entités de la séance pour ne conserver que celles éligibles à la désambiguïsation."""
-        return [e for e in session_entities if should_resolve(e)]
+                if rel:
+                    logger.debug(
+                        "Extrait [function_of] : PER/SPK '{}' ({}) ──> FCT '{}' (pos={})",
+                        ent.text,
+                        ent.type,
+                        fct_link.entity.text,
+                        ent.start,
+                    )
 
     def resolve(self, main_ent: EntityWithFcts, top_k: int = 3) -> list[Candidate]:
-        """Résout un titre en appliquant la stratégie à 2 passes et filtrage par scope."""
+        """Résout un titre via Match Direct (P1), KB externe (P2) ou Dépilage de la Focus Stack (P3)."""
         if not should_resolve(main_ent) or not self.fct_relations:
             return []
 
@@ -506,8 +556,6 @@ class LexicalFCTResolver:
             return []
 
         target_scope = self._get_scope_for_mention(main_ent.entity.text)
-        sec_idx = self._get_section_index(curr_pos)
-        sec_info = f" (S#{sec_idx})" if target_scope == Scope.SECTION else ""
 
         # --- PASSE 1 : Match lexical fort direct (Interne) ---
         fct_relations = [p for p in self.fct_relations if not p.is_external]
@@ -516,7 +564,7 @@ class LexicalFCTResolver:
 
         for p in reversed(fct_relations):
             if p.person.text in seen_names or not self._is_fctrelation_in_scope(
-                p, curr_pos, target_scope
+                p, curr_pos, target_scope, p.fct_position
             ):
                 continue
 
@@ -534,10 +582,9 @@ class LexicalFCTResolver:
         if pass1_cands:
             pass1_cands.sort(key=lambda x: x[0], reverse=True)
             results = [cand for _, cand in pass1_cands[:top_k]]
-            self._update_position(results[0].entity.text, curr_pos)
             return results
 
-        # --- SOURCE EXTERNE MATCH ---
+        # --- PASSE 2 : Match Source Externe ---
         external_cands: list[tuple[float, Candidate]] = []
         seen_names.clear()
 
@@ -551,7 +598,7 @@ class LexicalFCTResolver:
                     entity=p.person,
                     decision=DecisionType.PASS2_KB_MATCH,
                     scope=target_scope,
-                    explanation=f"FCT: '{p.fct.text}' | Jaccard: {jaccard:.2f}",
+                    explanation=f"FCT Externe: '{p.fct.text}' | Jaccard: {jaccard:.2f}",
                 )
                 external_cands.append((jaccard, cand))
                 seen_names.add(p.person.text)
@@ -560,82 +607,39 @@ class LexicalFCTResolver:
             external_cands.sort(key=lambda x: x[0], reverse=True)
             return [cand for _, cand in external_cands[:top_k]]
 
-        # --- PASSE 2 : Inclusion asymétrique (Couverture) ---
-        ordered_fctrelations = sorted(
-            fct_relations,
-            key=lambda p: (
-                0 if p.last_seen_position < curr_pos else 1,
-                (
-                    -p.last_seen_position
-                    if p.last_seen_position < curr_pos
-                    else p.last_seen_position
-                ),
-            ),
-        )
-
-        pass2_cands: list[Candidate] = []
+        # --- PASSE 3 : Dépilage de la Focus Stack (Upward Coreference) ---
+        pass3_cands: list[Candidate] = []
         seen_names.clear()
 
-        for p in ordered_fctrelations:
+        # On parcourt la pile de focus du sommet (le plus récent) vers la base
+        for entry in reversed(self.focus_stack):
+            p = entry.fct_relation
+            
+            # Ne considérer que les activations situées STRICTEMENT avant la mention
+            if entry.position >= curr_pos:
+                continue
+
             if p.person.text in seen_names or not self._is_fctrelation_in_scope(
-                p, curr_pos, target_scope
+                p, curr_pos, target_scope, entry.position
             ):
                 continue
 
             cov = coverage_score(mention_tokens, p.tokens)
             if cov >= self.coverage_threshold:
-                dist = curr_pos - p.last_seen_position
+                dist = curr_pos - entry.position
                 cand = Candidate(
                     entity=p.person,
                     decision=DecisionType.PASS3_COREF_UPWARD_MATCH,
                     scope=target_scope,
                     explanation=(
                         f"FCT: '{p.fct.text}' | Couverture: {cov:.2f} | "
-                        f"Distance: {dist}"
+                        f"Distance activation: {dist} chars"
                     ),
                 )
-                pass2_cands.append(cand)
+                pass3_cands.append(cand)
                 seen_names.add(p.person.text)
 
-                if len(pass2_cands) >= top_k:
+                if len(pass3_cands) >= top_k:
                     break
 
-        return pass2_cands
-
-
-if __name__ == "__main__":
-    logger.info("Démarrage du test du résolveur FCT...")
-    file_path = Path("data/2026-07-01_export_label-studio_NER-NEL_pre-traite.json")
-
-    if file_path.exists():
-        df_data = load_ls_data(file_path)
-        session_entities, session_text = extract_session(df_data, task_ids=[995, 996])
-
-        logger.info("Extraction de {} entités pour la séance.", len(session_entities))
-
-        resolver = LexicalFCTResolver(threshold_pass1=0.70, threshold_pass2=0.85)
-        resolver.add_scope_rule("rapporteur", Scope.SECTION)
-
-        resolver.inject_external_fctrelations(
-            [
-                ("Léon Blum", "président du conseil"),
-                ("Albert Lebrun", "président de la république"),
-            ]
-        )
-
-        # Indexation initiale
-        for main_ent in session_entities:
-            resolver.update_state(main_ent)
-
-        logger.info("Titres TITL enregistrés aux offsets : {}", resolver.titl_positions)
-
-        for main_ent in session_entities:
-            resolver.observe_mention(main_ent)
-
-            if should_resolve(main_ent):
-                results = resolver.resolve(main_ent, top_k=3)
-                logger.info("Mention à désambiguïser : {}", main_ent.entity)
-                for cand in results:
-                    logger.info("   └─ {}", cand)
-    else:
-        logger.warning("Fichier non trouvé : {}", file_path)
+        return pass3_cands
