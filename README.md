@@ -2,6 +2,8 @@
 
 Intra-session Named Entity Resolution (NEL) for Label Studio exports of parliamentary debates. Resolves ambiguous titles and functions (`PER`/`SPK`) to named individuals.
 
+See [STRATEGY.md](STRATEGY.md) for more details on the resolution algorithm.
+
 ## Setup
 
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
@@ -44,4 +46,3 @@ uv run decidon-nel resolve -i export.json -kb kb.json --jaccard 0.75 --coverage 
 * **JSON (`*_resolved.json`)**: Enriched Label Studio export containing candidate predictions in `resolved_intra`.
 * **CSV (`*_summary.csv`)**: Resolution summary with entity spans, task IDs, and matching votes.
 
-```
