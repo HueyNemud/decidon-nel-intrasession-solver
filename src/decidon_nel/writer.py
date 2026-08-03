@@ -11,8 +11,9 @@ logger = logging.getLogger(__name__)
 
 
 def _candidate_to_dict(cand: Candidate) -> dict[str, Any]:
-    """Format a Candidate instance into a dictionary for JSON output."""
+    """Format a Candidate instance into a dictionary for JSON output including person entity ID."""
     return {
+        "person_id": cand.entity.id,
         "person_name": cand.entity.text,
         "decision": cand.decision.value,
         "explanation": cand.explanation,
@@ -59,7 +60,7 @@ def save_resolution_csv(
     resolutions: dict[str, list[Candidate]],
     output_path: str | Path,
 ) -> Path:
-    """Save a CSV summary report for all extracted session entities."""
+    """Save a CSV summary report for all extracted session entities with target person entity IDs."""
     out_path = Path(output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -81,6 +82,7 @@ def save_resolution_csv(
             "linked_fct_count": len(main_ent.fcts),
             "is_resolved": bool(cands),
             "candidate_count": len(cands),
+            "top1_person_id": top1.entity.id if top1 else "",
             "top1_person_name": top1.entity.text if top1 else "",
             "top1_decision": top1.decision.value if top1 else "",
             "top1_scope": top1.scope.value if top1 else "",
@@ -90,7 +92,7 @@ def save_resolution_csv(
     fieldnames = [
         "entity_id", "task_id", "annotation_id", "entity_type", "start", "end", "text",
         "linked_fct_count", "is_resolved", "candidate_count",
-        "top1_person_name", "top1_decision", "top1_scope", "top1_explanation",
+        "top1_person_id", "top1_person_name", "top1_decision", "top1_scope", "top1_explanation",
     ]
 
     with out_path.open("w", encoding="utf-8-sig", newline="") as f:
