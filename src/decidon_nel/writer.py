@@ -4,6 +4,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Any, Optional
+import uuid
 
 from decidon_nel.solver import Candidate, EntityWithFcts
 
@@ -13,8 +14,9 @@ logger = logging.getLogger(__name__)
 def _candidate_to_dict(cand: Candidate) -> dict[str, Any]:
     """Format a Candidate instance into a dictionary for JSON output including person entity ID."""
     return {
-        "person_id": cand.entity.id,
-        "person_name": cand.entity.text,
+        "match_uuid": cand.entity.uuid,
+        "match_id": cand.entity.id,
+        "match_text": cand.entity.text,
         "decision": cand.decision.value,
         "explanation": cand.explanation,
         "scope": cand.scope.value,
@@ -23,7 +25,8 @@ def _candidate_to_dict(cand: Candidate) -> dict[str, Any]:
 
 def save_resolved_label_studio_json(
     raw_tasks: list[dict[str, Any]],
-    resolutions: dict[str, list[Candidate]],
+    session_entities: list[EntityWithFcts],
+    resolutions: dict[uuid.UUID, list[Candidate]],
     output_path: str | Path,
     target_task_ids: Optional[list[int]] = None,
 ) -> Path:
@@ -42,9 +45,24 @@ def save_resolved_label_studio_json(
         if not annotations:
             continue
 
+        # FIXME faire mieux que ça
+        session_entities_by_uuid = {e.entity.uuid: e for e in session_entities}
+
         for item in annotations[-1].get("result", []):
-            item_id = item.get("id")
-            if cands := resolutions.get(item_id):
+            # FIXME Temporary patch until all entities are assigned and UUID
+            if not item.get("uuid"):
+                logger.error(
+                    "Annotation item missing 'uuid': %s. Skipping this item.", item
+                )
+                continue
+            uuid_ = item["uuid"]
+            entity = session_entities_by_uuid.get(uuid_)
+            if not entity:
+                raise ValueError(
+                    f"Entity with UUID {item.get('uuid')} not found in session_entities."
+                )
+            item["should_resolve"] = entity.entity.should_resolve
+            if cands := resolutions.get(entity.entity.uuid):
                 item["resolved_intra"] = [_candidate_to_dict(c) for c in cands]
                 resolved_count += 1
 
@@ -59,7 +77,7 @@ def save_resolved_label_studio_json(
 
 def save_resolution_csv(
     session_entities: list[EntityWithFcts],
-    resolutions: dict[str, list[Candidate]],
+    resolutions: dict[uuid.UUID, list[Candidate]],
     output_path: str | Path,
 ) -> Path:
     """Save a CSV summary report for all extracted session entities with target person entity IDs."""
@@ -70,7 +88,7 @@ def save_resolution_csv(
 
     for main_ent in session_entities:
         ent = main_ent.entity
-        cands = resolutions.get(ent.id, [])
+        cands = resolutions.get(ent.uuid, [])
         top1 = cands[0] if cands else None
 
         rows.append(

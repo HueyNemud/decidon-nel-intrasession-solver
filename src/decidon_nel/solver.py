@@ -35,7 +35,7 @@ class Scope(str, Enum):
 class Entity:
     """Named entity with its span positions and task metadata."""
 
-    uuid: str
+    uuid: uuid.UUID
     id: str
     start: int
     end: int
@@ -251,7 +251,7 @@ class LSAnnotation:
                 logger.error(
                     f"Annotation item missing 'uuid': {item}. Assigning temporary UUID."
                 )
-                item_uuid = str(uuid.uuid4())
+                item_uuid = uuid.uuid4()
 
             if item_type == "labels" and item_id:
                 val = item.get("value", {})
@@ -427,7 +427,7 @@ class LexicalFCTResolver:
             if name and fct:
                 idx = len(self.fct_relations)
                 dummy_person = Entity(
-                    uuid=str(uuid.uuid4()),
+                    uuid=uuid.uuid4(),
                     id=f"ext_{idx}",
                     start=-1,
                     end=-1,
@@ -437,7 +437,7 @@ class LexicalFCTResolver:
                     annotation_id=-1,
                 )
                 dummy_fct = Entity(
-                    uuid=str(uuid.uuid4()),
+                    uuid=uuid.uuid4(),
                     id=f"ext_fct_{idx}",
                     start=-1,
                     end=-1,
@@ -521,17 +521,17 @@ class LexicalFCTResolver:
 
     def resolve(self, main_ent: EntityWithFcts, top_k: int = 3) -> list[Candidate]:
         """Resolve ambiguous title via Direct Match (Pass 1), External KB (Pass 2), or Focus Stack (Pass 3)."""
-        if not should_resolve(main_ent) or not self.fct_relations:
+        entity, _ = main_ent.entity, main_ent.fcts
+
+        if entity.should_resolve is False or not self.fct_relations:
             return []
 
-        main_ent.entity.should_resolve = True
-
-        curr_pos = main_ent.entity.start
-        mention_tokens = get_tokens(main_ent.entity.text)
+        curr_pos = entity.start
+        mention_tokens = get_tokens(entity.text)
         if not mention_tokens:
             return []
 
-        target_scope = self._get_scope_for_mention(main_ent.entity.text)
+        target_scope = self._get_scope_for_mention(entity.text)
 
         # --- PASS 1: Direct Internal Lexical Match ---
         pass1_cands: list[tuple[float, Candidate]] = []

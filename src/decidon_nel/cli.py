@@ -2,9 +2,9 @@ import json
 import logging
 from pathlib import Path
 from typing import Optional
+import uuid
 
 from rich.console import Console
-from rich.panel import Panel
 from rich.status import Status
 from rich.table import Table
 from rich.text import Text
@@ -244,29 +244,32 @@ def resolve(
     for main_ent in session_entities:
         resolver.update_state(main_ent)
 
-    resolutions: dict[str, list[Candidate]] = {}
+    resolutions: dict[uuid.UUID, list[Candidate]] = {}
     resolved_count = 0
-    resolvable = [e for e in session_entities if should_resolve(e)]
 
+    for entfct in session_entities:
+        entfct.entity.should_resolve = should_resolve(entfct)
+
+    resolvable = [entfct for entfct in session_entities if entfct.entity.should_resolve]
     console.print(
         f"[bold]Resolving [cyan]{len(resolvable)}[/cyan] ambiguous mentions...[/bold]",
     )
 
     for main_ent in session_entities:
-        if should_resolve(main_ent):
-            main_ent.entity.should_resolve = True
+        if main_ent.entity.should_resolve:
             cands = resolver.resolve(main_ent, top_k=top_k)
 
             if verbose:
                 _print_resolution_row(main_ent.entity.text, cands)
 
             if cands:
-                resolutions[main_ent.entity.id] = cands
+                resolutions[main_ent.entity.uuid] = cands
                 resolved_count += 1
         resolver.activate_matching_roles(main_ent)
 
     save_resolved_label_studio_json(
         raw_tasks=raw_data,
+        session_entities=session_entities,
         resolutions=resolutions,
         output_path=out_json,
         target_task_ids=task_ids,
