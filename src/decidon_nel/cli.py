@@ -16,13 +16,12 @@ from decidon_nel.solver import (
     Scope,
     extract_session,
     load_ls_data,
-    should_resolve
+    should_resolve,
 )
 from decidon_nel.writer import (
     save_resolution_csv,
     save_resolved_label_studio_json,
 )
-
 
 app = typer.Typer(
     name="decidon-nel",
@@ -36,10 +35,11 @@ logger = logging.getLogger(__name__)
 
 # Style mappings for resolution pass labels
 _PASS_STYLE: dict[str, tuple[str, str]] = {
-    "1-DIRECT":             ("bold green",  "P1·DIRECT  "),
-    "2-EXTERNAL":           ("bold blue",   "P2·EXTERNAL"),
+    "1-DIRECT": ("bold green", "P1·DIRECT  "),
+    "2-EXTERNAL": ("bold blue", "P2·EXTERNAL"),
     "3-UPWARD_COREFERENCE": ("bold yellow", "P3·COREF   "),
 }
+
 
 def parse_tasks(tasks: Optional[str]) -> Optional[list[int]]:
     """Parse task ID list or range string (e.g., '995,996' or '995-1000')."""
@@ -83,29 +83,30 @@ def load_kb(path: Optional[Path]) -> list[tuple[str, str]]:
         console.print(f"[bold red]KB load error:[/bold red] {e}")
         return []
 
+
 def _format_explanation(explanation: str) -> tuple[str, str]:
     """Extract untruncated FCT text and format metrics compactly.
-    
+
     Splits strictly on ' | ' to avoid truncating French titles with internal apostrophes.
     """
     parts = explanation.split(" | ")
     first_part = parts[0]
-    
+
     if first_part.startswith("FCT Externe: '"):
         fct = first_part[14:]
     elif first_part.startswith("FCT: '"):
         fct = first_part[6:]
     else:
         fct = first_part
-        
+
     if fct.endswith("'"):
         fct = fct[:-1]
 
     metrics = [
         p.replace("Couverture:", "Cov:")
-         .replace("Distance activation:", "Δ:")
-         .replace(" chars", "c")
-         .strip()
+        .replace("Distance activation:", "Δ:")
+        .replace(" chars", "c")
+        .strip()
         for p in parts[1:]
     ]
     return fct, " · ".join(metrics)
@@ -116,7 +117,9 @@ def _print_resolution_row(mention_text: str, candidates: list[Candidate]) -> Non
     mention = Text(f'"{mention_text}"', style="italic cyan")
 
     if not candidates:
-        console.print(mention, Text(" ➔ ", style="dim"), Text("✗ No match", style="dim red"))
+        console.print(
+            mention, Text(" ➔ ", style="dim"), Text("✗ No match", style="dim red")
+        )
         return
 
     top = candidates[0]
@@ -124,7 +127,11 @@ def _print_resolution_row(mention_text: str, candidates: list[Candidate]) -> Non
     fct, metrics = _format_explanation(top.explanation)
 
     # Main line: Mention ➔ Entity [PASS]
-    console.print(mention, Text(f" ➔ {top.entity.text}", style="bold white"), Text(f" [{label}]", style=style))
+    console.print(
+        mention,
+        Text(f" ➔ {top.entity.text}", style="bold white"),
+        Text(f" [{label}]", style=style),
+    )
 
     # Main FCT detail node
     has_others = len(candidates) > 1
@@ -138,7 +145,9 @@ def _print_resolution_row(mention_text: str, candidates: list[Candidate]) -> Non
         for i, cand in enumerate(candidates[1:]):
             sub_branch = "      └── " if i == len(candidates[1:]) - 1 else "      ├── "
             c_fct, c_met = _format_explanation(cand.explanation)
-            c_style, c_label = _PASS_STYLE.get(cand.decision.value, ("white", cand.decision.value))
+            c_style, c_label = _PASS_STYLE.get(
+                cand.decision.value, ("white", cand.decision.value)
+            )
             c_meta = f" ({c_met})" if c_met else ""
 
             alt_line = Text(sub_branch, style="dim")
@@ -150,10 +159,16 @@ def _print_resolution_row(mention_text: str, candidates: list[Candidate]) -> Non
                 alt_line.append(c_meta, style="dim cyan")
             console.print(alt_line)
 
+
 @app.command()
 def resolve(
     input_file: Path = typer.Option(
-        ..., "--input", "-i", exists=True, readable=True, help="Input Label Studio JSON export."
+        ...,
+        "--input",
+        "-i",
+        exists=True,
+        readable=True,
+        help="Input Label Studio JSON export.",
     ),
     output_json: Optional[Path] = typer.Option(
         None, "--output-json", "-oj", help="Output enriched JSON path."
@@ -165,13 +180,22 @@ def resolve(
         None, "--tasks", "-t", help="Task IDs or ranges (e.g. '995,996' or '995-1000')."
     ),
     jaccard: float = typer.Option(
-        0.70, "--jaccard", min=0.0, max=1.0, help="Jaccard similarity threshold for Pass 1."
+        0.70,
+        "--jaccard",
+        min=0.0,
+        max=1.0,
+        help="Jaccard similarity threshold for Pass 1.",
     ),
     coverage: float = typer.Option(
         0.85, "--coverage", min=0.0, max=1.0, help="Coverage threshold for Pass 3."
     ),
     external_kb: Optional[Path] = typer.Option(
-        None, "--external-kb", "-kb", exists=True, readable=True, help="Optional external KB file."
+        None,
+        "--external-kb",
+        "-kb",
+        exists=True,
+        readable=True,
+        help="Optional external KB file.",
     ),
     top_k: int = typer.Option(
         3, "--top-k", min=1, help="Max candidates per resolution."
@@ -204,8 +228,7 @@ def resolve(
     console.print(table_cfg)
 
     resolver = LexicalFCTResolver(
-        jaccard_threshold=jaccard,
-        coverage_threshold=coverage
+        jaccard_threshold=jaccard, coverage_threshold=coverage
     )
     resolver.add_scope_rule("rapporteur", Scope.SECTION)
     resolver.add_scope_rule("commissaire", Scope.SECTION)
@@ -214,7 +237,9 @@ def resolve(
         ext_pairs = load_kb(external_kb)
         if ext_pairs:
             resolver.inject_external_fctrelations(ext_pairs)
-            console.print(f"[green]✓[/green] Injected [bold]{len(ext_pairs)}[/bold] external KB profiles.")
+            console.print(
+                f"[green]✓[/green] Injected [bold]{len(ext_pairs)}[/bold] external KB profiles."
+            )
 
     for main_ent in session_entities:
         resolver.update_state(main_ent)
@@ -224,24 +249,27 @@ def resolve(
     resolvable = [e for e in session_entities if should_resolve(e)]
 
     console.print(
-            f"[bold]Resolving [cyan]{len(resolvable)}[/cyan] ambiguous mentions...[/bold]",
-        
+        f"[bold]Resolving [cyan]{len(resolvable)}[/cyan] ambiguous mentions...[/bold]",
     )
 
     for main_ent in session_entities:
         if should_resolve(main_ent):
+            main_ent.entity.should_resolve = True
             cands = resolver.resolve(main_ent, top_k=top_k)
-            
+
             if verbose:
                 _print_resolution_row(main_ent.entity.text, cands)
-            
+
             if cands:
                 resolutions[main_ent.entity.id] = cands
                 resolved_count += 1
         resolver.activate_matching_roles(main_ent)
 
     save_resolved_label_studio_json(
-        raw_tasks=raw_data, resolutions=resolutions, output_path=out_json, target_task_ids=task_ids
+        raw_tasks=raw_data,
+        resolutions=resolutions,
+        output_path=out_json,
+        target_task_ids=task_ids,
     )
     save_resolution_csv(
         session_entities=session_entities, resolutions=resolutions, output_path=out_csv
@@ -251,7 +279,10 @@ def resolve(
     table_res = Table(title="Summary", show_header=True, header_style="bold green")
     table_res.add_column("Metric", style="dim")
     table_res.add_column("Value", style="bold green")
-    table_res.add_row("Resolved mentions", f"{resolved_count} / {len(resolvable)} ({resolved_count / len(resolvable) * 100:.1f}%)")
+    table_res.add_row(
+        "Resolved mentions",
+        f"{resolved_count} / {len(resolvable)} ({resolved_count / len(resolvable) * 100:.1f}%)",
+    )
     table_res.add_row("Enriched JSON", str(out_json))
     table_res.add_row("Summary CSV", str(out_csv))
     console.print("\n", table_res)

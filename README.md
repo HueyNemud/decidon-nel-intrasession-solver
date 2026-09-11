@@ -18,13 +18,13 @@ uv sync
 
 ```bash
 # Resolve full export
-uv run decidon-nel resolve -i export.json
+uv run decidon-nel -i export.json
 
 # Target specific tasks
-uv run decidon-nel resolve -i export.json -t 109-125
+uv run decidon-nel -i export.json -t 109-125
 
 # Use external KB & custom thresholds
-uv run decidon-nel resolve -i export.json -kb kb.json --jaccard 0.75 --coverage 0.80
+uv run decidon-nel -i export.json -kb kb.json --jaccard 0.75 --coverage 0.80
 
 ```
 
@@ -46,4 +46,3 @@ uv run decidon-nel resolve -i export.json -kb kb.json --jaccard 0.75 --coverage 
 
 * **JSON (`*_resolved.json`)**: Enriched Label Studio export containing candidate predictions in `resolved_intra`.
 * **CSV (`*_summary.csv`)**: Resolution summary with entity spans, task IDs, and matching votes.
-

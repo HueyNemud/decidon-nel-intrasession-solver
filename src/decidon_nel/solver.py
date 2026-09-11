@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 from typing import TypeAlias
 import unicodedata
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +28,14 @@ class Scope(str, Enum):
 
     SESSION = "session"
     SECTION = "section"
+    PARAGRAPH = "paragraph"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class Entity:
     """Named entity with its span positions and task metadata."""
 
+    uuid: str
     id: str
     start: int
     end: int
@@ -40,6 +43,7 @@ class Entity:
     type: str
     task_id: int
     annotation_id: int
+    should_resolve: bool = False  # Indicates if the entity is eligible for resolution
 
     def __str__(self) -> str:
         return (
@@ -47,6 +51,14 @@ class Entity:
             f"{self.text} [{self.type}] "
             f"(task={self.task_id}, annotation={self.annotation_id})"
         )
+
+    def __hash__(self) -> int:
+        return hash(self.uuid)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Entity):
+            return NotImplemented
+        return self.uuid == other.uuid
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,7 +206,11 @@ def jaccard_similarity(set1: frozenset[str], set2: frozenset[str]) -> float:
 
 def coverage_score(mention_tokens: frozenset[str], fct_tokens: frozenset[str]) -> float:
     """Calculate token coverage ratio of mention within target function tokens."""
-    return len(mention_tokens & fct_tokens) / len(mention_tokens) if mention_tokens else 0.0
+    return (
+        len(mention_tokens & fct_tokens) / len(mention_tokens)
+        if mention_tokens
+        else 0.0
+    )
 
 
 @dataclass(slots=True)
@@ -225,11 +241,24 @@ class LSAnnotation:
         relations: list[tuple[str, str, str]] = []
 
         for item in self.results:
-            item_id, item_type = item.get("id"), item.get("type")
+            item_uuid, item_id, item_type = (
+                item.get("uuid"),
+                item.get("id"),
+                item.get("type"),
+            )
+
+            if not item_uuid:
+                logger.error(
+                    f"Annotation item missing 'uuid': {item}. Assigning temporary UUID."
+                )
+                item_uuid = str(uuid.uuid4())
+
             if item_type == "labels" and item_id:
                 val = item.get("value", {})
                 labels = val.get("labels") or ["UNKNOWN"]
+
                 entities[item_id] = Entity(
+                    uuid=item_uuid,
                     id=item_id,
                     start=val.get("start", 0) + offset,
                     end=val.get("end", 0) + offset,
@@ -271,7 +300,11 @@ def extract_session(
     task_ids: list[int] | None = None,
 ) -> tuple[list[EntityWithFcts], str]:
     """Extract and aggregate entity spans across tasks into session timeline."""
-    raw_tasks = load_ls_data(data_or_path) if isinstance(data_or_path, (str, Path)) else data_or_path
+    raw_tasks = (
+        load_ls_data(data_or_path)
+        if isinstance(data_or_path, (str, Path))
+        else data_or_path
+    )
 
     tasks = [
         LSAnnotation.from_dict(t)
@@ -314,11 +347,12 @@ class LexicalFCTResolver:
         if scope_routing:
             self.scope_routing.update(scope_routing)
 
-    def get_resolvable_entities(
-        self, entities: list[EntityWithFcts]
-    ) -> list[EntityWithFcts]:
-        """Filter entities that require disambiguation."""
-        return [ent for ent in entities if should_resolve(ent)]
+    # FIXME Unused ?
+    # def get_resolvable_entities(
+    #     self, entities: list[EntityWithFcts]
+    # ) -> list[EntityWithFcts]:
+    #     """Filter entities that require disambiguation."""
+    #     return [ent for ent in entities if should_resolve(ent)]
 
     def add_scope_rule(self, keyword: str, scope: Scope) -> None:
         """Assign spatial scope rule to a specific function keyword."""
@@ -327,8 +361,10 @@ class LexicalFCTResolver:
 
     def push_focus(self, fct_relation: FCTRelation, position: int) -> None:
         """Push role activation entry onto focus stack."""
-        self.focus_stack.append(FocusEntry(fct_relation=fct_relation, position=position))
-        
+        self.focus_stack.append(
+            FocusEntry(fct_relation=fct_relation, position=position)
+        )
+
         if self.debug_focus_stack:
             logger.debug(
                 "Focus Stack [+] : '%s' (%s) at pos %s",
@@ -358,7 +394,7 @@ class LexicalFCTResolver:
         )
         self.fct_relations.append(fctrelation)
         self._fct_relations_keys.add(key)
-        
+
         source = "External KB" if is_external else f"Internal (pos={position})"
         logger.debug(
             "Registered FCT relation [%s]: %s [%s] ──> '%s' [%s]",
@@ -371,11 +407,14 @@ class LexicalFCTResolver:
         return fctrelation
 
     def inject_external_fctrelations(
-        self, external_data: dict[str, str] | list[tuple[str, str]] | list[dict[str, str]]
+        self,
+        external_data: dict[str, str] | list[tuple[str, str]] | list[dict[str, str]],
     ) -> None:
         """Inject external KB profiles (dict, tuple list, or dict list)."""
         count_before = len(self.fct_relations)
-        items = external_data.items() if isinstance(external_data, dict) else external_data
+        items = (
+            external_data.items() if isinstance(external_data, dict) else external_data
+        )
 
         for item in items:
             name, fct = None, None
@@ -388,6 +427,7 @@ class LexicalFCTResolver:
             if name and fct:
                 idx = len(self.fct_relations)
                 dummy_person = Entity(
+                    uuid=str(uuid.uuid4()),
                     id=f"ext_{idx}",
                     start=-1,
                     end=-1,
@@ -397,6 +437,7 @@ class LexicalFCTResolver:
                     annotation_id=-1,
                 )
                 dummy_fct = Entity(
+                    uuid=str(uuid.uuid4()),
                     id=f"ext_fct_{idx}",
                     start=-1,
                     end=-1,
@@ -405,9 +446,13 @@ class LexicalFCTResolver:
                     task_id=-1,
                     annotation_id=-1,
                 )
-                self.add_fctrelation(dummy_person, dummy_fct, position=-1, is_external=True)
+                self.add_fctrelation(
+                    dummy_person, dummy_fct, position=-1, is_external=True
+                )
 
-        logger.info("%d external KB relations injected.", len(self.fct_relations) - count_before)
+        logger.info(
+            "%d external KB relations injected.", len(self.fct_relations) - count_before
+        )
 
     def _get_section_index(self, pos: int) -> int:
         return bisect.bisect_right(self.titl_positions, pos) if pos >= 0 else -1
@@ -420,14 +465,20 @@ class LexicalFCTResolver:
         )
 
     def _is_fctrelation_in_scope(
-        self, fctrelation: FCTRelation, curr_pos: int, target_scope: Scope, active_pos: int
+        self,
+        fctrelation: FCTRelation,
+        curr_pos: int,
+        target_scope: Scope,
+        active_pos: int,
     ) -> bool:
         if fctrelation.is_external or target_scope == Scope.SESSION:
             return True
 
         match target_scope:
             case Scope.SECTION:
-                return self._get_section_index(active_pos) == self._get_section_index(curr_pos)
+                return self._get_section_index(active_pos) == self._get_section_index(
+                    curr_pos
+                )
             case Scope.PARAGRAPH:
                 return abs(curr_pos - active_pos) < 800
             case _:
@@ -441,7 +492,11 @@ class LexicalFCTResolver:
 
         mention_tokens = get_tokens(ent.text)
         for relation in self.fct_relations:
-            if not relation.is_external and jaccard_similarity(mention_tokens, relation.tokens) >= self.jaccard_threshold:
+            if (
+                not relation.is_external
+                and jaccard_similarity(mention_tokens, relation.tokens)
+                >= self.jaccard_threshold
+            ):
                 self.push_focus(relation, ent.start)
 
     def update_state(self, main_ent: EntityWithFcts) -> None:
@@ -468,6 +523,8 @@ class LexicalFCTResolver:
         """Resolve ambiguous title via Direct Match (Pass 1), External KB (Pass 2), or Focus Stack (Pass 3)."""
         if not should_resolve(main_ent) or not self.fct_relations:
             return []
+
+        main_ent.entity.should_resolve = True
 
         curr_pos = main_ent.entity.start
         mention_tokens = get_tokens(main_ent.entity.text)

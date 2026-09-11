@@ -51,7 +51,9 @@ def save_resolved_label_studio_json(
     with out_path.open("w", encoding="utf-8") as f:
         json.dump(updated_tasks, f, ensure_ascii=False, indent=2)
 
-    logger.info("Enriched JSON saved to '%s' (%d entities resolved).", out_path, resolved_count)
+    logger.info(
+        "Enriched JSON saved to '%s' (%d entities resolved).", out_path, resolved_count
+    )
     return out_path
 
 
@@ -71,28 +73,46 @@ def save_resolution_csv(
         cands = resolutions.get(ent.id, [])
         top1 = cands[0] if cands else None
 
-        rows.append({
-            "entity_id": ent.id,
-            "task_id": ent.task_id,
-            "annotation_id": ent.annotation_id,
-            "entity_type": ent.type,
-            "start": ent.start,
-            "end": ent.end,
-            "text": ent.text,
-            "linked_fct_count": len(main_ent.fcts),
-            "is_resolved": bool(cands),
-            "candidate_count": len(cands),
-            "top1_person_id": top1.entity.id if top1 else "",
-            "top1_person_name": top1.entity.text if top1 else "",
-            "top1_decision": top1.decision.value if top1 else "",
-            "top1_scope": top1.scope.value if top1 else "",
-            "top1_explanation": top1.explanation if top1 else "",
-        })
+        rows.append(
+            {
+                "entity_uuid": ent.uuid,
+                "entity_id": ent.id,
+                "task_id": ent.task_id,
+                "annotation_id": ent.annotation_id,
+                "entity_type": ent.type,
+                "start": ent.start,
+                "end": ent.end,
+                "text": ent.text,
+                "linked_fct_count": len(main_ent.fcts),
+                "should_resolve": main_ent.entity.should_resolve,
+                "is_resolved": bool(cands),
+                "candidate_count": len(cands),
+                "top1_match_uuid": top1.entity.uuid if top1 else "",
+                "top1_match_text": top1.entity.text if top1 else "",
+                "top1_decision": top1.decision.value if top1 else "",
+                "top1_scope": top1.scope.value if top1 else "",
+                "top1_explanation": top1.explanation if top1 else "",
+            }
+        )
 
     fieldnames = [
-        "entity_id", "task_id", "annotation_id", "entity_type", "start", "end", "text",
-        "linked_fct_count", "is_resolved", "candidate_count",
-        "top1_person_id", "top1_person_name", "top1_decision", "top1_scope", "top1_explanation",
+        "entity_uuid",
+        "entity_id",
+        "task_id",
+        "annotation_id",
+        "entity_type",
+        "start",
+        "end",
+        "text",
+        "linked_fct_count",
+        "should_resolve",
+        "is_resolved",
+        "candidate_count",
+        "top1_match_uuid",
+        "top1_match_text",
+        "top1_decision",
+        "top1_scope",
+        "top1_explanation",
     ]
 
     with out_path.open("w", encoding="utf-8-sig", newline="") as f:
